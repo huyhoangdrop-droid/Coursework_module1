@@ -1,0 +1,77 @@
+version: "3.8"
+
+# Lakehouse demo stack
+#
+#  MinIO         - S3-compatible object storage (data lake files)
+#  PostgreSQL    - backend database for Hive Metastore
+#  Hive Metastore- catalog that maps table names -> file locations in MinIO
+#  Trino         - SQL query engine that reads from Hive Metastore + MinIO
+
+services:
+  seaweedfs:
+    image: chrislusf/seaweedfs:latest
+    container_name: seaweedfs
+    command: server -s3 
+    ports:
+      - "9000:8333"
+      - "9333:9333"  # Cluster UI (Master UI)
+      - "8888:8888"  #  file manager UI (Filer UI)
+    volumes:
+      - seaweedfs_data:/data
+
+  # ── Hive Metastore backend DB ────────────────────────────────────────────────
+  metastore-db:
+    image: postgres:15
+    container_name: metastore-db
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: metastore
+      POSTGRES_USER: hive
+      POSTGRES_PASSWORD: hive
+
+  # ── Hive Metastore ───────────────────────────────────────────────────────────
+  hive-metastore:
+    image: 'starburstdata/hive:3.1.2-e.18'
+    container_name: hive-metastore
+    ports:
+      - '9083:9083' # Access via Thrift protocol
+    environment:
+      HIVE_METASTORE_DRIVER: org.postgresql.Driver
+      HIVE_METASTORE_JDBC_URL: jdbc:postgresql://metastore-db:5432/metastore
+      HIVE_METASTORE_USER: hive
+      HIVE_METASTORE_PASSWORD: hive
+      S3_ENDPOINT: http://seaweedfs:8333
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_PATH_STYLE_ACCESS: "true" # Required for MinIO compatibility
+      # Below arguments exist for no reasons, but
+      # we can not live without it
+      REGION: ""
+      GOOGLE_CLOUD_KEY_FILE_PATH: ""
+      AZURE_ADL_CLIENT_ID: ""
+      AZURE_ADL_CREDENTIAL: ""
+      AZURE_ADL_REFRESH_URL: ""
+      AZURE_ABFS_STORAGE_ACCOUNT: ""
+      AZURE_ABFS_ACCESS_KEY: ""
+      AZURE_WASB_STORAGE_ACCOUNT: ""
+      AZURE_ABFS_OAUTH: ""
+      AZURE_ABFS_OAUTH_TOKEN_PROVIDER: ""
+      AZURE_ABFS_OAUTH_CLIENT_ID: ""
+      AZURE_ABFS_OAUTH_SECRET: ""
+      AZURE_ABFS_OAUTH_ENDPOINT: ""
+      AZURE_WASB_ACCESS_KEY: ""
+
+  # ── Query Engine ─────────────────────────────────────────────────────────────
+  trino:
+    image: trinodb/trino:480
+    container_name: trino
+    depends_on:
+      - hive-metastore
+    ports:
+      - "8080:8080"   # Web UI + JDBC  →  http://localhost:8080
+    volumes:
+      - ./conf/trino/catalog:/etc/trino/catalog
+
+volumes:
+  seaweedfs_data:

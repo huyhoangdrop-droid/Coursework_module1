@@ -1,0 +1,217 @@
+# Simplified Kafka setup for local development (KRaft mode - no ZooKeeper needed)
+version: ‘3.8’
+
+services:
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    # Remember the difference between container_name and hostname:
+    # + container_name is the name of the container in Docker, which you can use to refer to the container in Docker commands (e.g., docker logs kafka). It must be unique across all containers on the same Docker host.
+    # + hostname is the network name that the container uses to identify itself on the Docker network. It is used for inter-container communication. If not specified, it defaults to the container name.
+    hostname: kafka
+    container_name: kafka
+    user: "0:0" #delete if linux/ error for window unwriteable data/var
+    ports:
+      - "9092:9092" # Kafka client port
+      - "9093:9093" # Controller port for KRaft mode
+    environment:
+      # These settings configure Kafka to run in KRaft mode (no ZooKeeper)
+      KAFKA_PROCESS_ROLES: controller,broker # Set the node to be both a controller (for cluster management) and a broker (for handling client requests)
+      KAFKA_NODE_ID: 1 # Unique ID for this Kafka node (must be a positive integer)
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093" # Define the controller quorum voters (only one node in this case)
+      # Kafka listeners and advertised listeners
+      # PLAINTEXT_HOST is for external (host machine) connections
+      # PLAINTEXT is for internal (Docker network) connections
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:19092,PLAINTEXT_HOST://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # Advertise different addresses for internal vs external clients
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:19092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1 # In production, this should be at least 3 for fault tolerance
+      # Optional: Set a unique cluster ID for KRaft mode (can be any string, but should be unique if running multiple clusters)
+      CLUSTER_ID: "Mk3OEYBSD34fcwNTJENDM2Qk"
+    #volumes:
+      # You can use volumes to persist Kafka data on the host machine, which allows you to keep your data even if the container is removed. This is especially useful for development and testing.
+      # The syntax is: - <host_path>:<container_path>
+      # In this example, we are mapping a local directory ./data to /var/lib/kafka/data inside the container, which is where Kafka stores its data by default.
+      #- ./data:/var/lib/kafka/data
+    healthcheck:
+      # The healthcheck tries to connect to the Kafka broker using the internal listener using the command kafka-broker-api-versions.
+      # (The command checks if the broker is responsive and can return its API versions. If it fails, it exits with code 1, which indicates an unhealthy state.)
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 || exit 1"]
+      interval: 10s # Check every 10 seconds
+      timeout: 5s # If the command takes longer than 5 seconds, consider it a failure
+      retries: 5 # After 5 consecutive failures, mark the service as unhealthy
+      start_period: 30s # Give Kafka up to 30 seconds to start before starting health checks
+    networks:
+      - kafka-net
+
+  postgres:
+    image: postgres:15-alpine
+    hostname: postgres
+    container_name: postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: testdb
+    command:
+      # Set wal_level to logical for CDC, which is required for Debezium to capture changes from PostgreSQL.
+      - "postgres"
+      - "-c"
+      - "wal_level=logical"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # Healthcheck uses pg_isready to check if the PostgreSQL server is ready to accept connections. 
+      # It tries to connect as the postgres user, and if it fails, it exits with code 1, indicating an unhealthy state.
+      # You often need to read the documentation of the specific image to find out what command to use for health checks, as it can vary between images and versions.
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - kafka-net
+
+  # It is essentially Kafka Connect with the Debezium connector pre-installed. 
+  # You can also use the official Kafka Connect image and install the Debezium connector manually, but using the pre-built image is more convenient for local development and testing.
+  debezium:
+    image: debezium/connect:2.5
+    hostname: debezium
+    container_name: debezium
+    ports:
+      - "8083:8083"
+    environment:
+      BOOTSTRAP_SERVERS: kafka:19092 # Use internal Docker network listener
+      # The group ID is used by Kafka Connect to manage consumer groups for connectors.
+      GROUP_ID: 1
+      # These topics are used by Kafka Connect to store connector 
+      # + configurations: the settings for each connector you create
+      # + offsets: the progress of each connector in reading the source data (e.g., how much of the PostgreSQL WAL has been processed)
+      # + statuses: the current status of each connector (e.g., running, failed, etc.)
+      CONFIG_STORAGE_TOPIC: debezium_connect_configs
+      OFFSET_STORAGE_TOPIC: debezium_connect_offsets
+      STATUS_STORAGE_TOPIC: debezium_connect_statuses
+      # Set replication factors to 1 for single broker
+      CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      STATUS_STORAGE_REPLICATION_FACTOR: 1
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8083/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - kafka-net
+
+  debezium-ui:
+    image: debezium/debezium-ui:latest
+    # platform: linux/amd64
+    hostname: debezium-ui
+    container_name: debezium-ui
+    ports:
+      - "8084:8080"
+    environment:
+      KAFKA_CONNECT_URIS: http://debezium:8083
+    depends_on:
+      debezium:
+        condition: service_healthy
+    networks:
+      - kafka-net
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:latest
+    hostname: schema-registry
+    container_name: schema-registry
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:19092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8081/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - kafka-net
+
+  redpanda-console:
+    image: redpandadata/console:latest
+    hostname: redpanda-console
+    container_name: redpanda-console
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_BROKERS: kafka:19092
+      SCHEMAREGISTRY_ENABLED: "true"
+      SCHEMAREGISTRY_URLS: http://schema-registry:8081
+      # These config options enable Kafka Connect integration in Redpanda Console
+      CONNECT_ENABLED: true
+      CONNECT_CLUSTERS_NAME: debezium
+      CONNECT_CLUSTERS_URL: http://debezium:8083
+    depends_on:
+      kafka:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/admin/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - kafka-net
+
+  # The below is Flink's stuffs: jobmanager for managing the job and taskmanager for executing tasks
+  jobmanager:
+    # Custom image = flink:2.0 + PyFlink + Kafka connector (see flink/Dockerfile)
+    build:
+      context: .
+      dockerfile: flink/Dockerfile
+    image: pyflink:2.0
+    ports:
+      - "8881:8081"
+    command: jobmanager
+    environment:
+      KAFKA_BROKER: kafka:19092 # Inside the Docker network, use the internal listener
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: jobmanager
+    volumes:
+      - ./:/opt/job # Job code is mounted here so `flink run -py` can submit it
+    networks:
+      - kafka-net
+
+  taskmanager:
+    image: pyflink:2.0
+    depends_on:
+      - jobmanager
+    command: taskmanager
+    environment:
+      KAFKA_BROKER: kafka:19092
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: jobmanager
+        taskmanager.numberOfTaskSlots: 4
+    networks:
+      - kafka-net
+networks:
+  kafka-net:
+    name: data-stack-network
+    # Remember we have bridge and host modes. 
+    # For local development, bridge is usually fine. Host mode can cause issues with port mapping and is not supported on all platforms.
+    driver: bridge
+volumes:
+  postgres-data:

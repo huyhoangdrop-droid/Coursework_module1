@@ -1,0 +1,22 @@
+[2026-10-27T11:20:25.468+0000] {local_task_job_runner.py:123} INFO - ::group::Pre task execution logs
+[2026-10-27T11:20:25.478+0000] {taskinstance.py:2612} INFO - Dependencies all met for dep_context=non-requeueable deps ti=<TaskInstance: stream_orders_to_gold_pipeline.validate_stream_quality scheduled__2026-10-27T11:15:00+00:00 [queued]>
+[2026-10-27T11:20:25.484+0000] {taskinstance.py:2612} INFO - Dependencies all met for dep_context=requeueable deps ti=<TaskInstance: stream_orders_to_gold_pipeline.validate_stream_quality scheduled__2026-10-27T11:15:00+00:00 [queued]>
+[2026-10-27T11:20:25.484+0000] {taskinstance.py:2865} INFO - Starting attempt 1 of 1
+[2026-10-27T11:20:25.493+0000] {taskinstance.py:2888} INFO - Executing <Task(PythonOperator): validate_stream_quality> on 2026-10-27 11:15:00+00:00
+[2026-10-27T11:20:25.505+0000] {standard_task_runner.py:104} INFO - Running: ['***', 'tasks', 'run', 'stream_orders_to_gold_pipeline', 'validate_stream_quality', 'scheduled__2026-10-27T11:15:00+00:00', '--job-id', '8', '--raw', '--subdir', 'DAGS_FOLDER/dag.py', '--cfg-path', '/tmp/tmp5q0pr8nt']
+[2026-10-27T11:20:25.508+0000] {standard_task_runner.py:105} INFO - Job 8: Subtask validate_stream_quality
+[2026-10-27T11:20:25.510+0000] {logging_mixin.py:190} WARNING - /home/***/.local/lib/python3.12/site-packages/***/task/task_runner/standard_task_runner.py:70 DeprecationWarning: This process (pid=941) is multi-threaded, use of fork() may lead to deadlocks in the child.
+[2026-10-27T11:20:25.511+0000] {standard_task_runner.py:72} INFO - Started process 974 to run task
+[2026-10-27T11:20:25.568+0000] {task_command.py:467} INFO - Running <TaskInstance: stream_orders_to_gold_pipeline.validate_stream_quality scheduled__2026-10-27T11:15:00+00:00 [running]> on host c20c0568b7ec
+[2026-10-27T11:20:25.638+0000] {taskinstance.py:3131} INFO - Exporting env vars: AIRFLOW_CTX_DAG_OWNER='***' AIRFLOW_CTX_DAG_ID='stream_orders_to_gold_pipeline' AIRFLOW_CTX_TASK_ID='validate_stream_quality' AIRFLOW_CTX_EXECUTION_DATE='2026-10-27T11:15:00+00:00' AIRFLOW_CTX_TRY_NUMBER='1' AIRFLOW_CTX_DAG_RUN_ID='scheduled__2026-10-27T11:15:00+00:00'
+[2026-10-27T11:20:29.881+0000] {taskinstance.py:731} INFO - ::endgroup::
+[2026-10-27T11:20:30.874+0000] {warnings.py:112} WARNING - /home/***/.local/lib/python3.12/site-packages/snowflake/sqlalchemy/base.py:1068: SAWarning: The GenericFunction 'flatten' is already registered and is going to be overridden.
+  functions.register_function("flatten", flatten)
+
+[2026-10-27T11:20:32.078+0000] {logging_mixin.py:190} INFO - [validate_stream_quality] have no new event in this window-> skip.
+[2026-10-27T11:20:32.079+0000] {python.py:240} INFO - Done. Returned value was: None
+[2026-10-27T11:20:32.085+0000] {taskinstance.py:340} INFO - ::group::Post task execution logs
+[2026-10-27T11:20:32.085+0000] {taskinstance.py:352} INFO - Marking task as SUCCESS. dag_id=stream_orders_to_gold_pipeline, task_id=validate_stream_quality, run_id=scheduled__2026-10-27T11:15:00+00:00, execution_date=20261027T111500, start_date=20261027T112025, end_date=20261027T112032
+[2026-10-27T11:20:32.223+0000] {local_task_job_runner.py:266} INFO - Task exited with return code 0
+[2026-10-27T11:20:32.234+0000] {taskinstance.py:3900} INFO - 1 downstream tasks scheduled from follow-on schedule check
+[2026-10-27T11:20:32.278+0000] {local_task_job_runner.py:245} INFO - ::endgroup::

@@ -1,0 +1,97 @@
+version: '3.8'
+
+# Build the custom image once with:  docker compose -f airflow-docker-compose.yaml build
+# Then start the stack with:         docker compose -f airflow-docker-compose.yaml up -d
+
+x-airflow-common:
+  &airflow-common
+  build:                          # Uses our Dockerfile (includes GE + DataHub SDK)
+    context: .
+    dockerfile: airflow/Dockerfile
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-airflow/airflow
+    AIRFLOW__CORE__FERNET_KEY: ''
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__LOGGING__DAG_PROCESSOR_MANAGER_LOG_LOCATION: /opt/airflow/logs/dag_processor_manager/dag_processor_manager.log
+    AIRFLOW__DATAHUB__ENABLED: 'true'
+    AIRFLOW_CONN_DATAHUB_REST_DEFAULT: '{"conn_type": "datahub_rest", "host": "http://172.17.0.1:8085"}' #same port with datahub
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./plugins:/opt/airflow/plugins
+  user: "${AIRFLOW_UID:-50000}:0"
+  networks:
+    - data-stack-network
+  depends_on:
+    postgres-airflow:
+      condition: service_healthy
+
+services:
+  # ── Postgres ────────────────────────────────────────────────────────────────
+  # Shared by both Airflow (database: airflow) and DataHub GMS (database: datahub).
+  # The init script in ./postgres-init/ creates the datahub database on first boot.
+  postgres-airflow:
+    image: postgres:13
+    ports:
+      - "5442:5432"
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - ./postgres-init:/docker-entrypoint-initdb.d  # Creates datahub DB on first start
+    networks:
+      - data-stack-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── Airflow Web UI ───────────────────────────────────────────────────────────
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8082:8080"   # Visit http://localhost:8082  (user: airflow / pass: airflow)
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+
+  # ── Airflow Scheduler ────────────────────────────────────────────────────────
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname $(hostname)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ── One-time DB init + admin user creation ──────────────────────────────────
+  airflow-init:
+    <<: *airflow-common
+    command: version
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_UPGRADE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
+
+networks:
+  data-stack-network:
+    name: data-stack-network
+    external: true

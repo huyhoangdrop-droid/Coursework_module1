@@ -1,0 +1,201 @@
+version: '3.8'
+
+# DataHub stack — must be started AFTER the Airflow stack (shares its postgres).
+# Start with:  docker compose -f datahub-docker-compose.yaml up -d
+#
+# UI is available at http://localhost:9002  (user: datahub / pass: datahub)
+#
+# Adapted from the official quickstart: ~/.datahub/quickstart/docker-compose.yml
+# Key differences from quickstart:
+#   - Uses existing Airflow postgres (postgres:5432) instead of MySQL
+#   - Uses existing Kafka (kafka:19092) instead of a new broker
+#   - Joins data-stack-network so all services reach each other by name
+
+networks:
+  data-stack-network:
+    name: data-stack-network
+    external: true
+
+services:
+
+
+  # ── OpenSearch (search backend — quickstart uses OpenSearch 2.x, not ES 7.x) ─
+  opensearch:
+    image: opensearchproject/opensearch:2.19.3
+    hostname: search
+    container_name: datahub-opensearch
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+      ES_JAVA_OPTS: "-Xms256m -Xmx512m"
+      OPENSEARCH_JAVA_OPTS: "-Xms768m -Xmx1024m"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sS --fail 'http://search:9200/_cluster/health?wait_for_status=yellow&timeout=0s'"]
+      interval: 5s
+      timeout: 15s
+      retries: 10
+      start_period: 60s
+    networks:
+      data-stack-network:
+        aliases:
+          - search
+
+  # ── DataHub system-update (runs DB migrations + index setup, then exits) ──────
+  datahub-system-update:
+    image: acryldata/datahub-upgrade:v1.5.0.6
+    hostname: datahub-system-update
+    command: ["-u", "SystemUpdate"]
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    environment:
+      EBEAN_DATASOURCE_URL: "jdbc:postgresql://postgres-airflow:5432/datahub"
+      EBEAN_DATASOURCE_DRIVER: "org.postgresql.Driver"
+      EBEAN_DATASOURCE_USERNAME: datahub
+      EBEAN_DATASOURCE_PASSWORD: datahub_password
+      EBEAN_DATASOURCE_HOST: postgres:5432
+      ELASTICSEARCH_HOST: search
+      ELASTICSEARCH_PORT: 9200
+      ELASTICSEARCH_PROTOCOL: http
+      ELASTICSEARCH_USE_SSL: "false"
+      ELASTICSEARCH_IMPLEMENTATION: opensearch
+      ELASTICSEARCH_INDEX_BUILDER_MAPPINGS_REINDEX: "true"
+      ELASTICSEARCH_INDEX_BUILDER_SETTINGS_REINDEX: "true"
+      ELASTICSEARCH_INDEX_BUILDER_REFRESH_INTERVAL_SECONDS: "3"
+      ELASTICSEARCH_BUILD_INDICES_CLONE_INDICES: "false"
+      KAFKA_BOOTSTRAP_SERVER: kafka:19092
+      GRAPH_SERVICE_IMPL: elasticsearch
+      ENTITY_REGISTRY_CONFIG_PATH: /datahub/datahub-gms/resources/entity-registry.yml
+      DATAHUB_SQL_SETUP_ENABLED: "true"
+      DATAHUB_PRECREATE_TOPICS: "true"
+      METADATA_SERVICE_AUTH_ENABLED: "false"
+      DATAHUB_TOKEN_SERVICE_SIGNING_KEY: "WnEdIeTG/VVCLQqGwC/BAkqyY0k+H8NEAtWGejrBI94="
+      DATAHUB_TOKEN_SERVICE_SALT: "YouKnowNothingJohnSnow"
+      DATAHUB_GMS_HOST: datahub-gms
+      DATAHUB_GMS_PORT: "8080"
+      DATAHUB_BASE_PATH: /
+      DATAHUB_GMS_BASE_PATH: /
+      KAFKA_SCHEMAREGISTRY_URL: "http://schema-registry:8081"
+      SCHEMA_REGISTRY_TYPE: INTERNAL
+      SCHEMA_REGISTRY_SYSTEM_UPDATE: "true"
+      SPRING_KAFKA_PROPERTIES_AUTO_REGISTER_SCHEMAS: "true"
+      SPRING_KAFKA_PROPERTIES_USE_LATEST_VERSION: "true"
+      USE_CONFLUENT_SCHEMA_REGISTRY: "true"
+      ENTITY_VERSIONING_ENABLED: "true"
+      PARTITIONS: "3"
+    networks:
+      - data-stack-network
+
+  # ── DataHub GMS (core API + embedded MAE/MCE consumers for Kafka→ES indexing) ─
+  datahub-gms:
+    image: acryldata/datahub-gms:v1.5.0.6
+    hostname: datahub-gms
+    depends_on:
+      datahub-system-update:
+        condition: service_completed_successfully
+    environment:
+      EBEAN_DATASOURCE_URL: "jdbc:postgresql://postgres-airflow:5432/datahub"
+      EBEAN_DATASOURCE_DRIVER: "org.postgresql.Driver"
+      EBEAN_DATASOURCE_USERNAME: datahub
+      EBEAN_DATASOURCE_PASSWORD: datahub_password
+      EBEAN_DATASOURCE_HOST: postgres:5432
+      ELASTICSEARCH_HOST: search
+      ELASTICSEARCH_PORT: 9200
+      ELASTICSEARCH_PROTOCOL: http
+      ELASTICSEARCH_USE_SSL: "false"
+      ELASTICSEARCH_IMPLEMENTATION: opensearch
+      ELASTICSEARCH_INDEX_BUILDER_MAPPINGS_REINDEX: "true"
+      ELASTICSEARCH_INDEX_BUILDER_SETTINGS_REINDEX: "true"
+      ELASTICSEARCH_LIMIT_RESULTS_STRICT: "true"
+      ES_BULK_REFRESH_POLICY: WAIT_UNTIL
+      KAFKA_BOOTSTRAP_SERVER: kafka:19092
+      KAFKA_SCHEMAREGISTRY_URL: "http://schema-registry:8081"
+      GRAPH_SERVICE_IMPL: elasticsearch
+      GRAPH_SERVICE_DIFF_MODE_ENABLED: "false"
+      ENTITY_REGISTRY_CONFIG_PATH: /datahub/datahub-gms/resources/entity-registry.yml
+      METADATA_SERVICE_AUTH_ENABLED: "false"
+      DATAHUB_TOKEN_SERVICE_SIGNING_KEY: "WnEdIeTG/VVCLQqGwC/BAkqyY0k+H8NEAtWGejrBI94="
+      DATAHUB_TOKEN_SERVICE_SALT: "YouKnowNothingJohnSnow"
+      DATAHUB_UPGRADE_HISTORY_KAFKA_CONSUMER_GROUP_ID: generic-duhe-consumer-job-client-gms
+      SCHEMA_REGISTRY_TYPE: INTERNAL
+      SPRING_KAFKA_PROPERTIES_AUTO_REGISTER_SCHEMAS: "true"
+      SPRING_KAFKA_PROPERTIES_USE_LATEST_VERSION: "true"
+      USE_CONFLUENT_SCHEMA_REGISTRY: "true"
+      MAE_CONSUMER_ENABLED: "true"
+      MCE_CONSUMER_ENABLED: "true"
+      PE_CONSUMER_ENABLED: "true"
+      ENTITY_SERVICE_ENABLE_RETENTION: "true"
+      ENTITY_VERSIONING_ENABLED: "true"
+      UI_INGESTION_ENABLED: "true"
+      ALTERNATE_MCP_VALIDATION: "true"
+      CONFIG_ENTITY_REGISTRY_USE_OPTIMIZED_LOADING: "true"
+      EXTRACT_JAR_ENABLED: "true"
+      STRICT_URN_VALIDATION_ENABLED: "true"
+      SEARCH_BAR_API_VARIANT: SEARCH_ACROSS_ENTITIES
+      POLICY_CACHE_REFRESH_INTERVAL_SECONDS: "120"
+      DATAHUB_SERVER_TYPE: quickstart
+      DATAHUB_TELEMETRY_ENABLED: "false"
+      DATAHUB_BASE_PATH: /
+      DATAHUB_GMS_BASE_PATH: /
+      SHOW_HOME_PAGE_REDESIGN: "true"
+      SHOW_INGESTION_PAGE_REDESIGN: "true"
+      SHOW_SEARCH_BAR_AUTOCOMPLETE_REDESIGN: "true"
+      SHOW_HAS_SIBLINGS_FILTER: "true"
+      THEME_V2_DEFAULT: "true"
+      DATAHUB_EMIT_MODE: SYNC_PRIMARY
+    ports:
+      - "8085:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sS --fail http://datahub-gms:8080/health"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 90s
+    networks:
+      - data-stack-network
+
+  # ── DataHub Actions (ingestion executor — required for UI-triggered ingestion) ─
+  datahub-actions:
+    image: acryldata/datahub-actions:v0.0.15
+    hostname: actions
+    depends_on:
+      datahub-gms:
+        condition: service_healthy
+    environment:
+      DATAHUB_GMS_HOST: datahub-gms
+      DATAHUB_GMS_PORT: "8080"
+      DATAHUB_GMS_PROTOCOL: http
+      DATAHUB_SYSTEM_CLIENT_ID: __datahub_system
+      DATAHUB_SYSTEM_CLIENT_SECRET: JohnSnowKnowsNothing
+      KAFKA_BOOTSTRAP_SERVER: kafka:19092
+      KAFKA_PROPERTIES_SECURITY_PROTOCOL: PLAINTEXT
+      SCHEMA_REGISTRY_URL: "http://schema-registry:8081"
+      METADATA_AUDIT_EVENT_NAME: MetadataAuditEvent_v4
+      METADATA_CHANGE_LOG_VERSIONED_TOPIC_NAME: MetadataChangeLog_Versioned_v1
+    networks:
+      - data-stack-network
+
+  # ── DataHub Frontend (React UI) ──────────────────────────────────────────────
+  datahub-frontend:
+    image: acryldata/datahub-frontend-react:v1.5.0.6
+    hostname: datahub-frontend-react
+    depends_on:
+      datahub-gms:
+        condition: service_healthy
+    ports:
+      - "9002:9002"
+    environment:
+      DATAHUB_GMS_HOST: datahub-gms
+      DATAHUB_GMS_PORT: "8080"
+      DATAHUB_SECRET: "YouKnowNothing"
+      DATAHUB_APP_VERSION: "v1.5.0.6"
+      DATAHUB_PLAY_MEM_BUFFER_SIZE: "10MB"
+      DATAHUB_TRACKING_TOPIC: DataHubUsageEvent_v1
+      KAFKA_BOOTSTRAP_SERVER: kafka:19092
+      ELASTIC_CLIENT_HOST: search
+      ELASTIC_CLIENT_PORT: "9200"
+      DATAHUB_BASE_PATH: /
+      DATAHUB_GMS_BASE_PATH: /
+      THEME_V2_DEFAULT: "true"
+    networks:
+      - data-stack-network
